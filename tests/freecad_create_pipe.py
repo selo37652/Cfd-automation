@@ -7,8 +7,8 @@ from pathlib import Path
 import FreeCAD as App
 import Part
 
-DIAMETER_MM = 160.0
-LENGTH_MM = 3000.0
+DIAMETER_MM = 50.0
+LENGTH_MM = 5000.0
 RADIUS_MM = DIAMETER_MM / 2
 out = Path(os.environ.get("CFD_STEP_OUT", "pipe_fluid_volume.step")).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)

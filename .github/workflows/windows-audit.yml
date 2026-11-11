@@ -1,0 +1,29 @@
+name: Windows runner safety audit
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - name: Check Windows runner resource limits
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $os=Get-CimInstance Win32_OperatingSystem
+          $disk=Get-PSDrive C
+          $cpu=Get-CimInstance Win32_Processor
+          $totalRam=[math]::Round($os.TotalVisibleMemorySize/1MB,2)
+          $free=[math]::Round($disk.Free/1GB,2)
+          "Windows: $($os.Caption)"
+          "RAM GiB: $totalRam"
+          "Free disk GiB: $free"
+          "Logical CPUs: $(($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum)"
+          "### GitHub Windows runner" >> $env:GITHUB_STEP_SUMMARY
+          "RAM GiB: $totalRam" >> $env:GITHUB_STEP_SUMMARY
+          "Available disk GiB: $free" >> $env:GITHUB_STEP_SUMMARY
+          if ($free -lt 5) { throw "Insufficient free disk space" }

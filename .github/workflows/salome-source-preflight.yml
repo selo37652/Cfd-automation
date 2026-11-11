@@ -1,0 +1,35 @@
+name: SALOME Windows source preflight
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/salome-source-preflight.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2022
+    timeout-minutes: 8
+    steps:
+      - name: Resolve official archive and checksum safely
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $page='https://www.salome-platform.org/?sdm_downloads=salome-9-16-0-zip'
+          $checksumUrl='https://files.salome-platform.org/Salome/md5/9.16.0/SALOME-9.16.0.zip.md5'
+          $headers=@{'User-Agent'='Mozilla/5.0 CFD-Automation-Research'}
+          $html=(Invoke-WebRequest -Uri $page -Headers $headers -TimeoutSec 90).Content
+          if ($html -notmatch 'SALOME-9.16.0.zip') { throw 'Not official ZIP download page' }
+          $urls=[regex]::Matches($html,'(?:href|data-download-url)\s*=\s*["''][^"'']+["'']') | ForEach-Object { $_.Value }
+          $candidate=$urls | Where-Object {$_ -match 'sdm_process_download|download_id|SALOME-9\.16\.0\.zip'} | Select-Object -First 10
+          "Download candidates (public URLs only):"
+          $candidate | ForEach-Object { $_ }
+          $checksum=(Invoke-WebRequest -Uri $checksumUrl -TimeoutSec 90).Content
+          $md5=[regex]::Match($checksum,'[a-fA-F0-9]{32}')
+          if (!$md5.Success) { throw 'Official SALOME MD5 not found' }
+          "Official MD5: $($md5.Value)"
+          "Free C disk (GiB): $([math]::Round((Get-PSDrive C).Free/1GB,1))"
+          "Free D disk (GiB): $([math]::Round((Get-PSDrive D).Free/1GB,1))"
+          "### Official SALOME 9.16 Windows package source verified" >> $env:GITHUB_STEP_SUMMARY
+          "Published MD5: $($md5.Value)" >> $env:GITHUB_STEP_SUMMARY

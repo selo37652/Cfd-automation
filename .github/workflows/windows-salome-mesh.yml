@@ -1,0 +1,70 @@
+name: SALOME GEOM and NETGEN - 50mm x 5m actual UNV
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-salome-mesh.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: salome-real-windows-mesh
+  cancel-in-progress: false
+jobs:
+  salome-mesh:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout SALOME Python geometry/mesh code
+        uses: actions/checkout@v4
+      - name: Install official SALOME in isolated GitHub runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          & ./scripts/install_salome_windows.ps1
+      - name: Run SALOME GEOM and SMESH in batch mode
+        shell: pwsh
+        env:
+          CFD_UNV_OUT: ${{ github.workspace }}\outputs\pipe_50mm_5m.unv
+          CFD_MESH_MAX_MM: '15'
+          CFD_MESH_MIN_MM: '4'
+          CFD_MAX_CELLS: '400000'
+        run: |
+          $ErrorActionPreference='Stop'
+          $launcher=(Get-Content (Join-Path $env:RUNNER_TEMP 'salome-launcher.txt') -Raw).Trim()
+          if (!(Test-Path $launcher)) { throw 'SALOME launcher was not verified' }
+          $src=Join-Path $env:GITHUB_WORKSPACE 'tests\salome_mesh_pipe.py'
+          if (!(Test-Path $src)) { throw 'SALOME Python mesh script absent' }
+          New-Item -ItemType Directory (Split-Path $env:CFD_UNV_OUT -Parent) -Force | Out-Null
+          $log=Join-Path $env:RUNNER_TEMP 'salome_stdout.log'
+          $err=Join-Path $env:RUNNER_TEMP 'salome_stderr.log'
+          $args='/d /s /c ""' + $launcher + '" -t -w1 "' + $src + '""'
+          Write-Host "Launching SALOME GEOM + SMESH in TUI mode"
+          $p=Start-Process -FilePath 'cmd.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError $err
+          if (Test-Path $log) { Get-Content $log -Tail 120 }
+          if (Test-Path $err) { Get-Content $err -Tail 100 }
+          if ($p.ExitCode -ne 0) { throw "SALOME exited with code $($p.ExitCode)" }
+          if (!(Test-Path $env:CFD_UNV_OUT)) { throw 'SALOME did not create a UNV mesh' }
+          $report=$env:CFD_UNV_OUT.Replace('.unv','.json')
+          if (!(Test-Path $report)) { throw 'SALOME did not create a mesh verification report' }
+          $data=Get-Content $report -Raw | ConvertFrom-Json
+          if ($data.tetrahedra -lt 1 -or $data.nodes -lt 1) { throw 'Empty 3D mesh' }
+          if ($data.tetrahedra -gt 400000) { throw 'Mesh exceeds 400k-cell safety ceiling' }
+          foreach ($name in @('inlet','outlet','wall')) {
+            if ($data.boundary_face_counts.$name -lt 1) { throw "Missing/empty boundary $name" }
+          }
+          if ((Get-Item $env:CFD_UNV_OUT).Length -lt 1024) { throw 'UNV file too small' }
+          "### Real SALOME mesh generation succeeded" >> $env:GITHUB_STEP_SUMMARY
+          "Geometry: vertical internal cylinder, diameter 50mm, length 5000mm" >> $env:GITHUB_STEP_SUMMARY
+          "Tetrahedra: $($data.tetrahedra)" >> $env:GITHUB_STEP_SUMMARY
+          "Nodes: $($data.nodes)" >> $env:GITHUB_STEP_SUMMARY
+          "Boundary groups: inlet=$($data.boundary_face_counts.inlet), outlet=$($data.boundary_face_counts.outlet), wall=$($data.boundary_face_counts.wall)" >> $env:GITHUB_STEP_SUMMARY
+          "UNV length units: mm; conversion to metres still required for BARAM" >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload verified SALOME mesh and report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: salome-pipe-50mm-5m-unv
+          path: outputs/
+          retention-days: 7
+          if-no-files-found: error

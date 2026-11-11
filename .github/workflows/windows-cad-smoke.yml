@@ -1,0 +1,81 @@
+name: Windows CAD test - FreeCAD
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: "Test stage"
+        required: true
+        type: choice
+        default: audit
+        options: [audit, freecad, salome-preflight, baram-preflight]
+permissions:
+  contents: read
+concurrency:
+  group: cad-windows-test
+  cancel-in-progress: false
+jobs:
+  windows-test:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: CPU RAM and disk safety audit
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          $disk = Get-PSDrive C
+          $cpu = Get-CimInstance Win32_Processor
+          "Windows: $($os.Caption)"
+          "Logical CPU: $(($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum)"
+          "RAM GiB: $([math]::Round($os.TotalVisibleMemorySize/1MB,1))"
+          "Free C GiB: $([math]::Round($disk.Free/1GB,1))"
+          if ($disk.Free -lt 5GB) { throw 'Insufficient free disk space for CAD smoke test' }
+      - name: Retrieve portable FreeCAD from official release
+        if: ${{ inputs.component == 'freecad' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ 'User-Agent'='CFD-Automation-GitHub-Test'; 'Authorization'="Bearer $env:GH_TOKEN" }
+          $tag = '1.1.3'
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/FreeCAD/FreeCAD/releases/tags/$tag" -Headers $headers
+          $name = "FreeCAD_$tag-Windows-x86_64-py311.7z"
+          $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+          $checksum = $release.assets | Where-Object { $_.name -eq "$name-SHA256.txt" } | Select-Object -First 1
+          if (!$asset -or !$checksum) { throw 'Missing official FreeCAD archive or checksum file. Refusing unverified download.' }
+          $pkg = Join-Path $env:RUNNER_TEMP $name
+          $sumfile = Join-Path $env:RUNNER_TEMP 'checksum.txt'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $pkg -MaximumRedirection 8
+          Invoke-WebRequest -Uri $checksum.browser_download_url -OutFile $sumfile -MaximumRedirection 8
+          $txt = Get-Content $sumfile -Raw
+          $m = [regex]::Match($txt, '[A-Fa-f0-9]{64}')
+          if (!$m.Success) { throw 'Could not parse checksum' }
+          $actual = (Get-FileHash $pkg -Algorithm SHA256).Hash
+          if ($actual -ine $m.Value) { throw 'FreeCAD SHA256 mismatch' }
+          $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+          if (!(Test-Path $sevenZip)) { throw '7-Zip not found on runner' }
+          $dest = Join-Path $env:RUNNER_TEMP 'FreeCAD'
+          New-Item -ItemType Directory $dest -Force | Out-Null
+          & $sevenZip x $pkg "-o$dest" -y | Select-Object -Last 8
+          if ($LASTEXITCODE -ne 0) { throw "7z extraction error: $LASTEXITCODE" }
+          $cmd = Get-ChildItem $dest -Recurse -Filter FreeCADCmd.exe -File | Select-Object -First 1
+          $gui = Get-ChildItem $dest -Recurse -Filter FreeCAD.exe -File | Select-Object -First 1
+          if (!$cmd -and !$gui) { throw 'FreeCAD executable absent in portable archive' }
+          if ($cmd) { "FreeCADCmd: $($cmd.FullName)" }
+          if ($gui) { "FreeCAD: $($gui.FullName)" }
+          "### FreeCAD package verified and extracted" >> $env:GITHUB_STEP_SUMMARY
+          "Official release: $tag" >> $env:GITHUB_STEP_SUMMARY
+          "SHA256: $actual" >> $env:GITHUB_STEP_SUMMARY
+      - name: SALOME compatibility prerequisite check
+        if: ${{ inputs.component == 'salome-preflight' }}
+        run: |
+          "SALOME Windows archive and its SHA256 must be validated before unattended installation."
+          "SALOME: NOT INSTALLED (preflight only)" >> $env:GITHUB_STEP_SUMMARY
+          "Official source: https://www.salome-platform.org/" >> $env:GITHUB_STEP_SUMMARY
+      - name: BARAM compatibility prerequisite check
+        if: ${{ inputs.component == 'baram-preflight' }}
+        run: |
+          "BARAM/NextFOAM Windows bundle and its SHA256 must be validated before unattended installation."
+          "BARAM: NOT INSTALLED (preflight only)" >> $env:GITHUB_STEP_SUMMARY
+          "Official source: https://baramcfd.org/" >> $env:GITHUB_STEP_SUMMARY
